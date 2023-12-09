@@ -18,14 +18,17 @@ use webrtc::peer_connection::configuration::RTCConfiguration;
 use webrtc::peer_connection::sdp::session_description::RTCSessionDescription;
 use webrtc::peer_connection::{OnTrackHdlrFn, RTCPeerConnection};
 use webrtc::track::track_local::track_local_static_rtp::TrackLocalStaticRTP;
+use webrtc::track::track_local::TrackLocal;
 
 use crate::signal::messages;
+
+use super::downtrack::Downtrack;
 
 pub type Id = String;
 
 pub struct Peer {
     id: Id,
-    pc: RTCPeerConnection,
+    pc: Arc<RTCPeerConnection>,
 
     pending_candidates: Mutex<Vec<RTCIceCandidateInit>>,
     event_tx: mpsc::Sender<messages::Event>,
@@ -45,7 +48,7 @@ impl Peer {
             .with_interceptor_registry(registry)
             .build();
 
-        let pc = api.new_peer_connection(config).await?;
+        let pc = Arc::new(api.new_peer_connection(config).await?);
 
         Ok(Arc::new(Peer {
             id: Id::from(Uuid::new_v4()),
@@ -63,8 +66,13 @@ impl Peer {
         self.id.clone()
     }
 
-    pub(crate) async fn add_track(&self, track: Arc<TrackLocalStaticRTP>) -> Result<()> {
-        let transceiver = self.pc.add_transceiver_from_track(track, None).await?;
+    pub(crate) fn pc(&self) -> Arc<RTCPeerConnection> {
+        self.pc.clone()
+    }
+
+    pub(crate) async fn add_track(&self, track: Arc<Downtrack>) -> Result<()> {
+        let transceiver = self.pc.add_transceiver_from_track(track.clone(), None).await?;
+        track.set_transceiver(transceiver.clone());
 
         // need to renegotiate
 

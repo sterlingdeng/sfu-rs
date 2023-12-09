@@ -12,6 +12,7 @@ use webrtc::track::track_remote::TrackRemote;
 use crate::sfu::peer;
 use crate::sfu::track_handler;
 
+use super::downtrack::Downtrack;
 use super::track_handler::TrackHandler;
 
 pub struct Router {
@@ -78,6 +79,14 @@ impl Router {
             if *other_peer_id == peer_id {
                 continue;
             }
+
+            let downtrack = Downtrack::new(
+                track.id(),
+                track.stream_id(),
+                peer_id.clone(),
+                track.codec().capability,
+                track.ssrc(),
+            );
 
             // todo: change this to a custom downtrack later
             // only subscribe if the peer wants to be subscribed

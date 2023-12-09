@@ -1,11 +1,14 @@
 use std::sync::{atomic, Arc, Mutex};
 
-use bytes::{Buf, BufMut, Bytes, BytesMut};
+use bytes::BytesMut;
 
 use anyhow::Result;
 use log::info;
 use webrtc::{
-    rtp_transceiver::rtp_codec::{RTCRtpCodecCapability, RTCRtpCodecParameters, RTPCodecType},
+    rtp_transceiver::{
+        rtp_codec::{RTCRtpCodecCapability, RTCRtpCodecParameters, RTPCodecType},
+        RTCRtpTransceiver,
+    },
     track::track_local::{self, TrackLocalWriter},
     util::Unmarshal,
     Error,
@@ -13,16 +16,16 @@ use webrtc::{
 
 use super::*;
 
-pub struct Downtrack<'a> {
-    id: &'a str,
-    stream_id: &'a str,
+pub struct Downtrack {
+    id: String,
+    stream_id: String,
     peer_id: peer::Id,
 
     codec: RTCRtpCodecCapability,
     codec_type: RTPCodecType,
 
     // inner set after bind
-    inner: Mutex<DowntrackInner>,
+    inner: Arc<Mutex<DowntrackInner>>,
 
     // internal fields
     publisher_ssrc: u32,
@@ -35,14 +38,57 @@ pub struct Downtrack<'a> {
 struct DowntrackInner {
     ssrc: u32,
     payload_type: u8,
-    mime_type: String,
-    write_stream: Option<Arc<dyn TrackLocalWriter>>,
+    mime_type: Option<String>,
+    write_stream: Option<Arc<dyn TrackLocalWriter + Sync + Send>>,
+    transceiver: Option<Arc<RTCRtpTransceiver>>,
 
     last_seq_num: u16,
     seq_num_offset: u16,
 }
 
-impl<'a> Downtrack<'a> {
+impl DowntrackInner {
+    fn new() -> Self {
+        DowntrackInner {
+            ssrc: 0,
+            payload_type: 0,
+            mime_type: None,
+            write_stream: None.into(),
+            transceiver: None,
+            last_seq_num: 0,
+            seq_num_offset: 0,
+        }
+    }
+}
+
+impl Downtrack {
+    pub async fn new(
+        id: String,
+        stream_id: String,
+        peer_id: peer::Id,
+        codec: RTCRtpCodecCapability,
+        publisher_ssrc: u32,
+    ) -> Result<Arc<Downtrack>> {
+        let dt = Arc::new(Downtrack {
+            id,
+            stream_id,
+            peer_id,
+            codec,
+            // todo fix this
+            codec_type: RTPCodecType::Video,
+            inner: Arc::new(Mutex::new(DowntrackInner::new())),
+            publisher_ssrc,
+            bound: atomic::AtomicBool::new(false),
+            muted: atomic::AtomicBool::new(false),
+            resync: atomic::AtomicBool::new(false),
+        });
+
+        Ok(dt)
+    }
+
+    pub fn set_transceiver(&self, transceiver: Arc<RTCRtpTransceiver>) {
+        self.inner.lock().unwrap().transceiver = Some(transceiver.clone())
+    }
+
     pub async fn write_rtp(&self, p: &rtp::packet::Packet) -> Result<usize> {
         if !self.bound.load(atomic::Ordering::Relaxed) {
             return Ok(0);
@@ -92,15 +138,30 @@ impl<'a> Downtrack<'a> {
         let packet = rtp::packet::Packet::unmarshal(&mut buf)?;
         self.write_rtp(&packet).await
     }
+
+    pub fn mute(&self) {
+        self.muted.swap(true, atomic::Ordering::Relaxed);
+    }
+
+    pub fn unmute(&self) {
+        let previously_muted = self.muted.swap(false, atomic::Ordering::Relaxed);
+        if previously_muted {
+            self.resync.store(true, atomic::Ordering::Relaxed);
+        }
+    }
+
+    pub fn is_muted(&self) -> bool {
+        self.muted.load(atomic::Ordering::Relaxed)
+    }
 }
 
-impl<'a> track_local::TrackLocal for Downtrack<'a> {
+impl track_local::TrackLocal for Downtrack {
     fn id(&self) -> &str {
-        self.id
+        self.id.as_str()
     }
 
     fn stream_id(&self) -> &str {
-        self.stream_id
+        self.stream_id.as_str()
     }
 
     fn kind(&self) -> webrtc::rtp_transceiver::rtp_codec::RTPCodecType {
@@ -140,7 +201,7 @@ impl<'a> track_local::TrackLocal for Downtrack<'a> {
                 let mut inner = self.inner.lock().unwrap();
                 inner.ssrc = t.ssrc();
                 inner.payload_type = codec.payload_type;
-                inner.mime_type = codec.capability.mime_type.clone();
+                inner.mime_type = Some(codec.capability.mime_type.clone());
                 inner.write_stream = Some(t.write_stream().unwrap());
                 info!("downtrack bound");
                 return Box::pin(async { Ok(codec) });

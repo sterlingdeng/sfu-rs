@@ -1331,6 +1331,7 @@ name = "sfu-rs"
 version = "0.1.0"
 dependencies = [
  "anyhow",
+ "async-trait",
  "bytes",
  "futures-channel",
  "futures-util",
