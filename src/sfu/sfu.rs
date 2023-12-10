@@ -15,7 +15,7 @@ impl Sfu {
         })
     }
 
-    pub fn get_session(&mut self, id: sessions::Id) -> Option<Arc<sessions::Session>> {
+    pub fn get_session(&self, id: sessions::Id) -> Option<Arc<sessions::Session>> {
         let sessions = self.sessions.lock();
         match sessions.get(&id) {
             Some(session) => return Some(session.clone()),
@@ -23,7 +23,7 @@ impl Sfu {
         }
     }
 
-    pub fn new_session(&mut self) -> Arc<sessions::Session> {
+    pub fn new_session(&self) -> Arc<sessions::Session> {
         let mut sessions = self.sessions.lock();
         let new_session = sessions::Session::new();
         let session = sessions

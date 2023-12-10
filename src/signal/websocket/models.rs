@@ -10,14 +10,14 @@ pub enum JsonRpcKind {
 }
 
 #[derive(Serialize, Deserialize, Debug)]
-enum Id {
+pub enum Id {
     Num(i32),
     String(String),
 }
 
 // jsonrpc request message
 #[derive(Serialize, Deserialize, Debug)]
-struct Request {
+pub struct Request {
     pub id: Id,
     // todo: try to turn this into an enum that can be switched
     pub method: String, // join, offer

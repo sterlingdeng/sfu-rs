@@ -10,9 +10,9 @@ use webrtc::rtp_transceiver::rtp_receiver::RTCRtpReceiver;
 
 use crate::sfu::peer;
 
-use webrtc::track::track_local::track_local_static_rtp::TrackLocalStaticRTP;
-use webrtc::track::track_local::{TrackLocal, TrackLocalWriter};
 use webrtc::track::track_remote::TrackRemote;
+
+use super::downtrack::Downtrack;
 
 /// TrackHandler struct manages the fanout of a uptrack (TrackRemote) and the downtracks.
 pub struct TrackHandler {
@@ -22,7 +22,8 @@ pub struct TrackHandler {
     // downtracks: Arc<Mutex<HashMap<peer::Id, HashMap<String, TrackLocalStaticRTP>>>>,
     broadcast_tx: Sender<rtp::packet::Packet>,
 
-    peers: Arc<Mutex<HashMap<peer::Id, ()>>>,
+    // the set of connected peers
+    connected_peers: Arc<Mutex<HashMap<peer::Id, ()>>>,
 
     cancellation: CancellationToken,
 }
@@ -41,8 +42,7 @@ impl TrackHandler {
             uptrack,
             upstream_rtp_receiver: rtp_receiver.clone(),
             broadcast_tx: tx,
-            // downtracks: Arc::new(Mutex::new(HashMap::new())),
-            peers: Arc::new(Mutex::new(HashMap::new())),
+            connected_peers: Arc::new(Mutex::new(HashMap::new())),
             cancellation: token,
         });
 
@@ -59,17 +59,17 @@ impl TrackHandler {
     }
 
     // todo: downtrack to return an err closed to indicate that it needs to be removed;
-    pub fn add_downtrack(&self, peer_id: peer::Id, downtrack: Arc<TrackLocalStaticRTP>) {
+    pub fn add_downtrack(&self, peer_id: peer::Id, downtrack: Arc<Downtrack>) {
         use broadcast::error::RecvError;
 
         let downtrack = downtrack.clone();
         let mut broadcast_rx = self.broadcast_tx.subscribe();
-        if let Some(_) = self.peers.lock().insert(peer_id.clone(), ()) {
+        if let Some(_) = self.connected_peers.lock().insert(peer_id.clone(), ()) {
             warn!("peer {} already exists in track handler", peer_id.clone());
             return;
         }
 
-        let peers_hm = self.peers.clone();
+        let peers_hm = self.connected_peers.clone();
 
         tokio::spawn(async move {
             loop {
@@ -99,6 +99,9 @@ impl TrackHandler {
 }
 
 async fn start_rtcp_loop(rtp_receiver: Arc<RTCRtpReceiver>, cancel: CancellationToken) {
+    let cancelled_fut = cancel.cancelled();
+    tokio::pin!(cancelled_fut);
+
     loop {
         tokio::select! {
             v = rtp_receiver.read_rtcp() => {
@@ -109,7 +112,7 @@ async fn start_rtcp_loop(rtp_receiver: Arc<RTCRtpReceiver>, cancel: Cancellation
                     }
                 }
             }
-            _ = cancel.cancelled() => {
+            _ = &mut cancelled_fut => {
                 return
             }
         }
@@ -121,6 +124,9 @@ async fn start_rtp_loop(
     sender: Sender<rtp::packet::Packet>,
     cancel: CancellationToken,
 ) {
+    let cancelled_fut = cancel.cancelled();
+    tokio::pin!(cancelled_fut);
+
     loop {
         tokio::select! {
             Ok((pkt, _attr)) = uptrack.read_rtp() => {
@@ -130,7 +136,7 @@ async fn start_rtp_loop(
                     }
                 }
             }
-            _ = cancel.cancelled() => {
+            _ = &mut cancelled_fut => {
                return
             },
         }

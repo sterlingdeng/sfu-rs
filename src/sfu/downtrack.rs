@@ -29,7 +29,8 @@ pub struct Downtrack {
 
     // internal fields
     publisher_ssrc: u32,
-    // rtcp_writer: func([]rtcp.Packet)
+
+    //rtcp_writer: atomic::AtomicPtr<Box<dyn (FnMut(dyn rtcp::packet::Packet))>>,
     bound: atomic::AtomicBool,
     muted: atomic::AtomicBool,
     resync: atomic::AtomicBool,
@@ -61,13 +62,15 @@ impl DowntrackInner {
 }
 
 impl Downtrack {
-    pub async fn new(
+    pub fn new(
         id: String,
         stream_id: String,
         peer_id: peer::Id,
         codec: RTCRtpCodecCapability,
         publisher_ssrc: u32,
-    ) -> Result<Arc<Downtrack>> {
+    ) -> Arc<Downtrack> {
+        let rtcp_writer = Box::new(|| {});
+
         let dt = Arc::new(Downtrack {
             id,
             stream_id,
@@ -77,12 +80,13 @@ impl Downtrack {
             codec_type: RTPCodecType::Video,
             inner: Arc::new(Mutex::new(DowntrackInner::new())),
             publisher_ssrc,
+            //       rtcp_writer: atomic::AtomicPtr::new( *rtcp_writer),
             bound: atomic::AtomicBool::new(false),
             muted: atomic::AtomicBool::new(false),
             resync: atomic::AtomicBool::new(false),
         });
 
-        Ok(dt)
+        dt
     }
 
     pub fn set_transceiver(&self, transceiver: Arc<RTCRtpTransceiver>) {
@@ -96,32 +100,41 @@ impl Downtrack {
         if !self.muted.load(atomic::Ordering::Relaxed) {
             return Ok(0);
         }
-        let mut inner = self.inner.lock().unwrap();
-        if self.resync.load(atomic::Ordering::Relaxed) {
-            if self.codec_type == RTPCodecType::Video {
-                if inner.last_seq_num != 0 {
-                    inner.seq_num_offset = p.header.sequence_number - inner.last_seq_num - 1;
+
+        let write_stream;
+        let mut pkt;
+
+        // scoped to drop the lock
+        {
+            let mut inner = self.inner.lock().unwrap();
+            if self.resync.load(atomic::Ordering::Relaxed) {
+                if self.codec_type == RTPCodecType::Video {
+                    if inner.last_seq_num != 0 {
+                        inner.seq_num_offset = p.header.sequence_number - inner.last_seq_num - 1;
+                    }
+                    self.resync.store(false, atomic::Ordering::Relaxed);
                 }
-                self.resync.store(false, atomic::Ordering::Relaxed);
             }
+
+            // Each downtrack tracks its own sequence number to minimize large gaps when tracks are
+            // muted/unmuted.
+            // SRTP decryption is stateful and large gaps in sequence numbers will cause unmuted tracks
+            // to fail.
+            let new_seq_num = p.header.sequence_number - inner.seq_num_offset;
+            inner.last_seq_num = new_seq_num;
+
+            let mut header = p.header.clone();
+            header.ssrc = inner.ssrc;
+            header.payload_type = inner.payload_type;
+            header.sequence_number = new_seq_num;
+
+            pkt = p.clone();
+            pkt.header = header;
+
+            write_stream = inner.write_stream.clone();
         }
 
-        // Each downtrack tracks its own sequence number to minimize large gaps when tracks are
-        // muted/unmuted.
-        // SRTP decryption is stateful and large gaps in sequence numbers will cause unmuted tracks
-        // to fail.
-        let new_seq_num = p.header.sequence_number - inner.seq_num_offset;
-        inner.last_seq_num = new_seq_num;
-
-        let mut header = p.header.clone();
-        header.ssrc = inner.ssrc;
-        header.payload_type = inner.payload_type;
-        header.sequence_number = new_seq_num;
-
-        let mut pkt = p.clone();
-        pkt.header = header;
-
-        if let Some(write_stream) = &inner.write_stream {
+        if let Some(write_stream) = write_stream {
             match write_stream.write_rtp(&pkt).await {
                 Ok(n) => return Ok(n as usize),
                 Err(e) => return Err(e.into()),

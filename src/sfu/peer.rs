@@ -3,7 +3,6 @@ use std::sync::Arc;
 use anyhow::{anyhow, Result};
 
 use log;
-use tokio::sync::mpsc;
 use uuid::Uuid;
 
 use webrtc::api::interceptor_registry::register_default_interceptors;
@@ -17,8 +16,6 @@ use webrtc::ice_transport::ice_candidate::RTCIceCandidateInit;
 use webrtc::peer_connection::configuration::RTCConfiguration;
 use webrtc::peer_connection::sdp::session_description::RTCSessionDescription;
 use webrtc::peer_connection::{OnTrackHdlrFn, RTCPeerConnection};
-use webrtc::track::track_local::track_local_static_rtp::TrackLocalStaticRTP;
-use webrtc::track::track_local::TrackLocal;
 
 use crate::signal::messages;
 
@@ -31,11 +28,13 @@ pub struct Peer {
     pc: Arc<RTCPeerConnection>,
 
     pending_candidates: Mutex<Vec<RTCIceCandidateInit>>,
-    event_tx: mpsc::Sender<messages::Event>,
+    event_tx: futures_channel::mpsc::Sender<Result<messages::Event>>,
 }
 
 impl Peer {
-    pub async fn new(event_tx: mpsc::Sender<messages::Event>) -> Result<Arc<Self>> {
+    pub async fn new(
+        event_tx: futures_channel::mpsc::Sender<Result<messages::Event>>,
+    ) -> Result<Arc<Self>> {
         let config = RTCConfiguration::default();
         let mut m = MediaEngine::default();
         m.register_default_codecs()?;
@@ -71,7 +70,10 @@ impl Peer {
     }
 
     pub(crate) async fn add_track(&self, track: Arc<Downtrack>) -> Result<()> {
-        let transceiver = self.pc.add_transceiver_from_track(track.clone(), None).await?;
+        let transceiver = self
+            .pc
+            .add_transceiver_from_track(track.clone(), None)
+            .await?;
         track.set_transceiver(transceiver.clone());
 
         // need to renegotiate

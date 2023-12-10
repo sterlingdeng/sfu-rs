@@ -4,23 +4,43 @@ use webrtc::{
     peer_connection::sdp::session_description::RTCSessionDescription,
 };
 
+#[derive(Debug)]
 pub enum Event {
-    JoinRequest(RTCSessionDescription),
-    TrickleIce(TrickleIce),
-    ClientOffer(RTCSessionDescription),
+    JoinRequest(JoinRequest),
+    TrickleIce(TrickleNotification),
+    ClientOffer(ClientOfferRequest),
     SfuOffer(RTCSessionDescription),
     ClientAnswer(RTCSessionDescription),
 }
 
 #[derive(Serialize, Deserialize, Debug)]
-struct JoinRequest {
-    session_id: String,
-    offer: RTCSessionDescription,
+pub struct JoinRequest {
+    pub session_id: String,
+    pub offer: RTCSessionDescription,
 }
 
-pub struct JoinResponse(RTCSessionDescription);
+#[derive(Serialize, Deserialize, Debug)]
+pub struct JoinResponse {
+    pub answer: RTCSessionDescription,
+    pub session_id: String,
+    pub peer_id: String,
+}
 
-pub struct TrickleIce {
+#[derive(Serialize, Deserialize, Debug)]
+pub struct ClientOfferRequest {
+    pub session_id: String,
+    pub peer_id: String,
+    pub offer: RTCSessionDescription,
+}
+
+#[derive(Serialize, Deserialize, Debug)]
+pub struct ClientOfferResponse {
+    pub answer: RTCSessionDescription,
+}
+
+#[derive(Serialize, Deserialize, Debug)]
+pub struct TrickleNotification {
+    pub target: u32,
     pub candidate: TrickleCandidate,
 }
 
